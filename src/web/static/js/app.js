@@ -3,6 +3,9 @@
 let pollTimer = null;
 let allJobs = [];
 let currentSettings = {};
+let allSources = [];
+let sourceCategories = [];
+let activeSourceFilter = "all";
 
 // --- Init ---
 document.addEventListener("DOMContentLoaded", () => {
@@ -12,6 +15,7 @@ document.addEventListener("DOMContentLoaded", () => {
     loadBaserowConfig();
     loadJobs();
     loadStats();
+    loadSources();
 });
 
 // --- Tabs ---
@@ -32,6 +36,7 @@ function switchTab(tabId) {
     if (tabId === "jobs") loadJobs();
     if (tabId === "stats") loadStats();
     if (tabId === "settings") loadSettings();
+    if (tabId === "sources") loadSources();
 }
 
 // --- Health ---
@@ -146,6 +151,11 @@ async function loadJobs() {
             startPolling();
         } else {
             stopPolling();
+            // Refresh source stats when all jobs finish
+            const sourcesTab = document.getElementById("tab-sources");
+            if (sourcesTab && sourcesTab.classList.contains("active")) {
+                loadSources();
+            }
         }
     } catch (e) {
         console.error("Failed to load jobs:", e);
@@ -184,6 +194,11 @@ function jobItemHTML(job, showDetails) {
     const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
     const fillClass = job.status === "completed" ? "done" : (job.status === "failed" ? "error" : "");
 
+    // Show source name if this job came from the catalog
+    const titleLine = job.source_name
+        ? `<span style="color:var(--accent);font-weight:500;">${escHTML(job.source_name)}</span>`
+        : escHTML(job.urls.join(", "));
+
     let details = "";
     if (showDetails) {
         details = `
@@ -207,7 +222,7 @@ function jobItemHTML(job, showDetails) {
         <li class="job-item" style="flex-direction:column;align-items:stretch;">
             <div style="display:flex;justify-content:space-between;align-items:center;">
                 <div class="job-info">
-                    <div class="job-url">${escHTML(job.urls.join(", "))}</div>
+                    <div class="job-url">${titleLine}</div>
                     <div style="font-size:0.75rem;color:var(--text-muted);">${job.created_at || ""}</div>
                 </div>
                 <div style="display:flex;align-items:center;gap:0.5rem;">
@@ -448,6 +463,192 @@ function renderBarChart(containerId, data) {
                 <div class="bar-count">${count}</div>
             </div>`;
     }).join("");
+}
+
+// --- Sources ---
+async function loadSources() {
+    try {
+        const res = await fetch("/api/sources");
+        const data = await res.json();
+        allSources = data.sources || [];
+        sourceCategories = data.categories || [];
+
+        // Render category filter buttons
+        const btnContainer = document.getElementById("source-cat-buttons");
+        if (btnContainer) {
+            btnContainer.innerHTML = sourceCategories.map(cat =>
+                `<button class="btn btn-sm btn-secondary source-cat-filter${activeSourceFilter === cat ? ' active' : ''}" data-cat="${escHTML(cat)}" onclick="filterSources('${escHTML(cat)}')">${escHTML(cat)}</button>`
+            ).join("");
+        }
+
+        renderSources();
+        updateSourcesWarning();
+    } catch (e) {
+        console.error("Failed to load sources:", e);
+    }
+}
+
+function updateSourcesWarning() {
+    const warn = document.getElementById("sources-warning");
+    const btn = document.getElementById("btn-scrape-all");
+    // Check if baserow is configured via the health dot
+    const brDot = document.getElementById("dot-baserow");
+    const configured = brDot && brDot.classList.contains("ok");
+    if (warn) warn.style.display = configured ? "none" : "block";
+    if (btn) btn.disabled = !configured;
+}
+
+function filterSources(category) {
+    activeSourceFilter = category;
+    // Update active state on filter buttons
+    document.querySelectorAll(".source-cat-filter").forEach(btn => {
+        btn.classList.toggle("active", btn.dataset.cat === category);
+    });
+    renderSources();
+}
+
+function renderSources() {
+    const container = document.getElementById("sources-list");
+    if (!container) return;
+
+    const filtered = activeSourceFilter === "all"
+        ? allSources
+        : allSources.filter(s => s.category === activeSourceFilter);
+
+    if (filtered.length === 0) {
+        container.innerHTML = '<div class="card" style="color:var(--text-muted);">No sources in this category.</div>';
+        return;
+    }
+
+    // Group by category
+    const grouped = {};
+    filtered.forEach(src => {
+        if (!grouped[src.category]) grouped[src.category] = [];
+        grouped[src.category].push(src);
+    });
+
+    let html = "";
+    for (const [cat, sources] of Object.entries(grouped)) {
+        if (activeSourceFilter === "all") {
+            html += `<div class="source-category-header">${escHTML(cat)}</div>`;
+        }
+        for (const src of sources) {
+            html += sourceCardHTML(src);
+        }
+    }
+
+    container.innerHTML = html;
+}
+
+function sourceCardHTML(src) {
+    const stats = src.stats || {};
+    const uploaded = stats.total_uploaded || 0;
+    const discovered = stats.total_discovered || 0;
+    const dupes = stats.total_duplicates || 0;
+    const errors = stats.total_errors || 0;
+    const lastScraped = stats.last_scraped
+        ? new Date(stats.last_scraped).toLocaleDateString()
+        : "Never";
+
+    const enabledClass = src.enabled ? "enabled" : "";
+    const checkedAttr = src.enabled ? "checked" : "";
+
+    return `
+        <div class="source-card ${enabledClass}" id="source-${src.id}">
+            <div class="source-toggle">
+                <label class="toggle">
+                    <input type="checkbox" ${checkedAttr} onchange="toggleSource('${src.id}', this.checked)">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <div class="source-info">
+                <div class="source-name">${escHTML(src.name)}</div>
+                <div class="source-desc">${escHTML(src.description)}</div>
+                <div class="source-stats-row">
+                    <span class="source-stat">Uploaded: <span class="val">${uploaded}</span></span>
+                    <span class="source-stat">Found: <span class="val">${discovered}</span></span>
+                    <span class="source-stat">Dupes: <span class="val">${dupes}</span></span>
+                    <span class="source-stat">Errors: <span class="val">${errors}</span></span>
+                    <span class="source-stat">Last: <span class="val">${escHTML(lastScraped)}</span></span>
+                </div>
+            </div>
+            <div class="source-actions">
+                <button class="btn btn-sm btn-secondary" onclick="scrapeSingleSource('${src.id}')">Scrape</button>
+            </div>
+        </div>`;
+}
+
+async function toggleSource(sourceId, enabled) {
+    try {
+        const res = await fetch(`/api/sources/${sourceId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled }),
+        });
+        if (!res.ok) {
+            toast("Failed to toggle source", "error");
+            loadSources(); // revert UI
+            return;
+        }
+        // Update local state
+        const src = allSources.find(s => s.id === sourceId);
+        if (src) src.enabled = enabled;
+        // Update card styling without full re-render
+        const card = document.getElementById(`source-${sourceId}`);
+        if (card) {
+            card.classList.toggle("enabled", enabled);
+        }
+    } catch (e) {
+        toast("Network error", "error");
+        loadSources();
+    }
+}
+
+async function scrapeSingleSource(sourceId) {
+    try {
+        const res = await fetch(`/api/sources/${sourceId}/scrape`, { method: "POST" });
+        if (!res.ok) {
+            const err = await res.json();
+            toast(err.detail || "Failed to start scrape", "error");
+            return;
+        }
+        const data = await res.json();
+        toast(`Started: ${data.message}`, "success");
+        loadJobs();
+        startPolling();
+    } catch (e) {
+        toast("Network error: " + e.message, "error");
+    }
+}
+
+async function scrapeAllEnabled() {
+    const btn = document.getElementById("btn-scrape-all");
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Starting...';
+
+    try {
+        const res = await fetch("/api/sources/scrape", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            toast(err.detail || "Failed to start", "error");
+            return;
+        }
+
+        const data = await res.json();
+        toast(data.message, "success");
+        loadJobs();
+        startPolling();
+    } catch (e) {
+        toast("Network error: " + e.message, "error");
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = "Scrape All Enabled";
+    }
 }
 
 // --- Toast ---

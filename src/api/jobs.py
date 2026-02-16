@@ -14,10 +14,13 @@ STATS_PATH = Path("/data/stats.json")
 
 class Job:
     """Represents a scraping job."""
-    def __init__(self, urls: list[str], config_overrides: dict = None):
+    def __init__(self, urls: list[str], config_overrides: dict = None,
+                 source_id: str = None, source_name: str = None):
         self.job_id = uuid.uuid4().hex[:12]
         self.urls = urls
         self.config_overrides = config_overrides or {}
+        self.source_id = source_id      # Which catalog source spawned this job
+        self.source_name = source_name  # Display name for GUI
         self.status = "queued"
         self.created_at = datetime.now().isoformat()
         self.started_at: Optional[str] = None
@@ -27,7 +30,7 @@ class Job:
         self._task: Optional[asyncio.Task] = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "job_id": self.job_id,
             "urls": self.urls,
             "status": self.status,
@@ -36,6 +39,11 @@ class Job:
             "completed_at": self.completed_at,
             "progress": self.progress.to_dict(),
         }
+        if self.source_id:
+            d["source_id"] = self.source_id
+        if self.source_name:
+            d["source_name"] = self.source_name
+        return d
 
     def cancel(self):
         self._cancel_event.set()
@@ -93,6 +101,8 @@ class JobQueue:
                     job.created_at = jdata.get("created_at", "")
                     job.started_at = jdata.get("started_at")
                     job.completed_at = jdata.get("completed_at")
+                    job.source_id = jdata.get("source_id")
+                    job.source_name = jdata.get("source_name")
                     # Restore progress
                     prog = jdata.get("progress", {})
                     job.progress.total_discovered = prog.get("total_discovered", 0)
@@ -116,13 +126,15 @@ class JobQueue:
         except Exception as e:
             logger.warning(f"Could not save job history: {e}")
 
-    async def submit(self, urls: list[str], config_overrides: dict = None) -> Job:
+    async def submit(self, urls: list[str], config_overrides: dict = None,
+                     source_id: str = None, source_name: str = None) -> Job:
         """Submit a new scraping job."""
-        job = Job(urls, config_overrides)
+        job = Job(urls, config_overrides, source_id=source_id, source_name=source_name)
         self._jobs[job.job_id] = job
         await self._queue.put(job)
         self._save_history()
-        logger.info(f"Job {job.job_id} queued with {len(urls)} URLs")
+        logger.info(f"Job {job.job_id} queued with {len(urls)} URLs"
+                     + (f" (source: {source_id})" if source_id else ""))
 
         # Start worker if not running
         if not self._running:
@@ -245,6 +257,19 @@ class JobQueue:
             )
 
         self._save_stats()
+
+        # Update per-source stats if this job came from the catalog
+        if job.source_id and self._app:
+            try:
+                self._app.state.config_store.update_source_stats(
+                    source_id=job.source_id,
+                    uploaded=p.total_uploaded,
+                    discovered=p.total_discovered,
+                    errors=p.total_errors,
+                    duplicates=p.total_duplicates,
+                )
+            except Exception as e:
+                logger.warning(f"Could not update source stats: {e}")
 
     def get_job(self, job_id: str) -> Optional[Job]:
         return self._jobs.get(job_id)

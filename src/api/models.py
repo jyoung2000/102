@@ -58,3 +58,11 @@ class StatsResponse(BaseModel):
     avg_inference_time: float = 0.0
     uptime_seconds: float = 0.0
     browser_status: str = "unknown"
+
+
+class SourceToggle(BaseModel):
+    enabled: bool
+
+
+class ScrapeSourcesRequest(BaseModel):
+    source_ids: Optional[list[str]] = Field(None, description="Specific source IDs to scrape. None = all enabled.")

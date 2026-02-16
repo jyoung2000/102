@@ -3,6 +3,7 @@ from pathlib import Path
 from src.utils.logging import logger
 
 CONFIG_PATH = Path("/data/config.json")
+SOURCE_STATS_PATH = Path("/data/source_stats.json")
 
 
 class ConfigStore:
@@ -10,7 +11,9 @@ class ConfigStore:
 
     def __init__(self):
         self._config = self._defaults()
+        self._source_stats = self._load_source_stats()
         self._load()
+        self._init_source_overrides()
 
     def _defaults(self) -> dict:
         return {
@@ -38,7 +41,84 @@ class ConfigStore:
                 "hamming_distance_threshold": 8,
                 "check_baserow": True,
             },
+            "sources": {},  # {source_id: {"enabled": bool}} — overrides per source
         }
+
+    def _init_source_overrides(self):
+        """Ensure the sources section exists."""
+        if "sources" not in self._config:
+            self._config["sources"] = {}
+
+    # --- Source stats persistence ---
+
+    def _load_source_stats(self) -> dict:
+        """Load per-source scraping stats from disk."""
+        try:
+            if SOURCE_STATS_PATH.exists():
+                with open(SOURCE_STATS_PATH) as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.warning(f"Could not load source stats: {e}")
+        return {}
+
+    def _save_source_stats(self):
+        """Persist per-source stats to disk."""
+        try:
+            SOURCE_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(SOURCE_STATS_PATH, "w") as f:
+                json.dump(self._source_stats, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Could not save source stats: {e}")
+
+    def get_source_stats(self, source_id: str = None) -> dict:
+        """Get per-source stats. None returns all."""
+        if source_id:
+            return self._source_stats.get(source_id, {
+                "total_uploaded": 0, "total_discovered": 0,
+                "total_errors": 0, "total_duplicates": 0,
+                "last_scraped": None,
+            })
+        return self._source_stats.copy()
+
+    def update_source_stats(self, source_id: str, uploaded: int, discovered: int,
+                            errors: int, duplicates: int):
+        """Update stats for a specific source after a scrape job completes."""
+        if source_id not in self._source_stats:
+            self._source_stats[source_id] = {
+                "total_uploaded": 0, "total_discovered": 0,
+                "total_errors": 0, "total_duplicates": 0,
+                "last_scraped": None,
+            }
+        s = self._source_stats[source_id]
+        s["total_uploaded"] += uploaded
+        s["total_discovered"] += discovered
+        s["total_errors"] += errors
+        s["total_duplicates"] += duplicates
+        from datetime import datetime
+        s["last_scraped"] = datetime.now().isoformat()
+        self._save_source_stats()
+
+    # --- Source enabled/disabled ---
+
+    def is_source_enabled(self, source_id: str, default: bool = False) -> bool:
+        """Check if a source is enabled (user override or catalog default)."""
+        overrides = self._config.get("sources", {})
+        if source_id in overrides:
+            return overrides[source_id].get("enabled", default)
+        return default
+
+    def set_source_enabled(self, source_id: str, enabled: bool):
+        """Toggle a source on or off."""
+        if "sources" not in self._config:
+            self._config["sources"] = {}
+        if source_id not in self._config["sources"]:
+            self._config["sources"][source_id] = {}
+        self._config["sources"][source_id]["enabled"] = enabled
+        self._save()
+
+    def get_source_overrides(self) -> dict:
+        """Get all user overrides for sources."""
+        return self._config.get("sources", {}).copy()
 
     def _load(self):
         """Load config from disk, merging with defaults."""

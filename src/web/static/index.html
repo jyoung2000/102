@@ -20,6 +20,7 @@
     <!-- Tabs -->
     <div class="tab-bar">
         <button class="tab-btn active" data-tab="scrape">Scrape</button>
+        <button class="tab-btn" data-tab="sources">Sources</button>
         <button class="tab-btn" data-tab="jobs">Jobs</button>
         <button class="tab-btn" data-tab="settings">Settings</button>
         <button class="tab-btn" data-tab="baserow">Baserow</button>
@@ -74,6 +75,36 @@
                 <li style="color: var(--text-muted); padding: 0.5rem;">No jobs yet</li>
             </ul>
         </div>
+    </div>
+
+    <!-- Tab: Sources -->
+    <div class="tab-content" id="tab-sources">
+        <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+                <div>
+                    <h2 style="margin-bottom:0.25rem;">Wallpaper Sources</h2>
+                    <p style="color:var(--text-secondary);font-size:0.85rem;margin:0;">
+                        Toggle sources on/off. Enabled sources will be scraped when you click "Scrape All Enabled".
+                    </p>
+                </div>
+                <button class="btn btn-primary" id="btn-scrape-all" onclick="scrapeAllEnabled()">
+                    Scrape All Enabled
+                </button>
+            </div>
+
+            <div id="sources-warning" class="warning-banner" style="display:none;">
+                Baserow is not configured. <a onclick="switchTab('baserow')">Set up Baserow</a> before scraping sources.
+            </div>
+
+            <!-- Category filter -->
+            <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+                <span style="font-size:0.85rem;color:var(--text-secondary);">Filter:</span>
+                <button class="btn btn-sm btn-secondary source-cat-filter active" data-cat="all" onclick="filterSources('all')">All</button>
+                <div id="source-cat-buttons"></div>
+            </div>
+        </div>
+
+        <div id="sources-list"></div>
     </div>
 
     <!-- Tab: Jobs -->

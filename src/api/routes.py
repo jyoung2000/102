@@ -2,9 +2,11 @@ import time
 from fastapi import APIRouter, Request, HTTPException
 from src.api.models import (
     ScrapeRequest, ScrapeResponse, JobStatus,
-    SettingsUpdate, BaserowConfig, HealthResponse, StatsResponse
+    SettingsUpdate, BaserowConfig, HealthResponse, StatsResponse,
+    SourceToggle, ScrapeSourcesRequest,
 )
 from src.storage.baserow import BaserowClient
+from src.scraper.sources import WALLPAPER_SOURCES, get_source_by_id, get_all_categories
 from src.utils.logging import logger
 
 router = APIRouter(prefix="/api")
@@ -148,3 +150,125 @@ async def get_stats(request: Request) -> dict:
         else "not available"
     )
     return stats
+
+
+# --- Sources ---
+
+@router.get("/sources")
+async def list_sources(request: Request) -> dict:
+    """List all wallpaper sources with their enabled state and per-source stats."""
+    config_store = request.app.state.config_store
+    all_stats = config_store.get_source_stats()
+
+    sources = []
+    for src in WALLPAPER_SOURCES:
+        sid = src["id"]
+        enabled = config_store.is_source_enabled(sid, default=src.get("enabled", False))
+        stats = all_stats.get(sid, {
+            "total_uploaded": 0, "total_discovered": 0,
+            "total_errors": 0, "total_duplicates": 0,
+            "last_scraped": None,
+        })
+        sources.append({
+            **src,
+            "enabled": enabled,
+            "stats": stats,
+        })
+
+    return {
+        "sources": sources,
+        "categories": get_all_categories(),
+    }
+
+
+@router.put("/sources/{source_id}")
+async def toggle_source(request: Request, source_id: str, body: SourceToggle) -> dict:
+    """Enable or disable a wallpaper source."""
+    source = get_source_by_id(source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail=f"Source '{source_id}' not found")
+
+    request.app.state.config_store.set_source_enabled(source_id, body.enabled)
+    return {"source_id": source_id, "enabled": body.enabled}
+
+
+@router.post("/sources/scrape")
+async def scrape_sources(request: Request, body: ScrapeSourcesRequest = None) -> dict:
+    """
+    Scrape all enabled sources (or specific ones).
+    Creates one job per source so per-source stats are tracked independently.
+    """
+    if not request.app.state.browser or not request.app.state.browser.ready:
+        raise HTTPException(status_code=503, detail="Browser not ready")
+    if not request.app.state.config_store.is_baserow_configured():
+        raise HTTPException(status_code=400, detail="Baserow not configured")
+
+    config_store = request.app.state.config_store
+
+    # Determine which sources to scrape
+    if body and body.source_ids:
+        # Scrape specific sources
+        to_scrape = []
+        for sid in body.source_ids:
+            src = get_source_by_id(sid)
+            if not src:
+                raise HTTPException(status_code=404, detail=f"Source '{sid}' not found")
+            to_scrape.append(src)
+    else:
+        # Scrape all enabled sources
+        to_scrape = []
+        for src in WALLPAPER_SOURCES:
+            if config_store.is_source_enabled(src["id"], default=src.get("enabled", False)):
+                to_scrape.append(src)
+
+    if not to_scrape:
+        raise HTTPException(status_code=400, detail="No sources enabled. Enable at least one source first.")
+
+    # Create one job per source
+    jobs = []
+    for src in to_scrape:
+        overrides = {}
+        if src.get("max_pages"):
+            overrides["max_pages"] = src["max_pages"]
+
+        job = await request.app.state.job_queue.submit(
+            urls=src["urls"],
+            config_overrides=overrides,
+            source_id=src["id"],
+            source_name=src["name"],
+        )
+        jobs.append({"job_id": job.job_id, "source_id": src["id"], "source_name": src["name"]})
+
+    return {
+        "message": f"Started {len(jobs)} scraping job(s)",
+        "jobs": jobs,
+    }
+
+
+@router.post("/sources/{source_id}/scrape")
+async def scrape_single_source(request: Request, source_id: str) -> ScrapeResponse:
+    """Scrape a single source by ID."""
+    if not request.app.state.browser or not request.app.state.browser.ready:
+        raise HTTPException(status_code=503, detail="Browser not ready")
+    if not request.app.state.config_store.is_baserow_configured():
+        raise HTTPException(status_code=400, detail="Baserow not configured")
+
+    src = get_source_by_id(source_id)
+    if not src:
+        raise HTTPException(status_code=404, detail=f"Source '{source_id}' not found")
+
+    overrides = {}
+    if src.get("max_pages"):
+        overrides["max_pages"] = src["max_pages"]
+
+    job = await request.app.state.job_queue.submit(
+        urls=src["urls"],
+        config_overrides=overrides,
+        source_id=src["id"],
+        source_name=src["name"],
+    )
+    return ScrapeResponse(
+        job_id=job.job_id,
+        status=job.status,
+        message=f"Scraping '{src['name']}'"
+    )
