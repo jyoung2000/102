@@ -1,0 +1,25 @@
+# Default settings — overridden by /data/config.json (managed via GUI)
+scraper:
+  request_delay_seconds: 2
+  max_concurrent_downloads: 3
+  max_pages_per_site: 50
+  page_load_timeout_seconds: 30
+
+resolution:
+  min_width: 1920
+  min_height: 1080
+  target_aspect_ratios:
+    - "16:9"
+    - "9:16"
+    - "21:9"
+    - "4:3"
+    - "3:2"
+    - "1:1"
+
+compression:
+  quality: 85
+
+deduplication:
+  enabled: true
+  hamming_distance_threshold: 8
+  check_baserow: true
